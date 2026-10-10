@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redefluss-Trainer</title>
+  <meta name="description" content="Live-Feedback beim Vortrag: rote Lampe bei Äh, Stottern und offenen Satzenden">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%23e5484d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-lamp="idle">
+  <header class="top">
+    <h1>Redefluss-Trainer</h1>
+    <p class="sub">Live-Feedback für Vorträge: Äh · Stottern · Satzende</p>
+  </header>
+
+  <main>
+    <section class="stage-panel" aria-live="polite">
+      <div id="lamp" class="lamp" data-state="idle" aria-hidden="true"></div>
+      <p id="lamp-label" class="lamp-label">Bereit</p>
+      <div class="controls">
+        <button id="btn-start" class="btn btn-primary" type="button">Start</button>
+        <button id="btn-stage" class="btn" type="button" title="Ganzer Bildschirm wird zur Lampe">Bühnenmodus</button>
+      </div>
+      <p class="hint">Leertaste = Start/Stopp · Esc = Bühnenmodus verlassen</p>
+      <p id="status" class="status" role="status"></p>
+      <div class="meter" title="Pegel über dem Raumgeräusch">
+        <div id="meter-fill" class="meter-fill"></div>
+      </div>
+      <p id="meter-info" class="meter-info"></p>
+      <button id="stage-exit" class="btn stage-exit" type="button">Bühnenmodus beenden</button>
+    </section>
+
+    <section class="stats" aria-label="Zähler">
+      <div class="stat cat-aeh"><span class="stat-num" id="count-aeh">0</span><span class="stat-label">Äh</span></div>
+      <div class="stat cat-stottern"><span class="stat-num" id="count-stottern">0</span><span class="stat-label">Stottern</span></div>
+      <div class="stat cat-satz"><span class="stat-num" id="count-satz">0</span><span class="stat-label">Satzende</span></div>
+      <div class="stat cat-fuellwort"><span class="stat-num" id="count-fuellwort">0</span><span class="stat-label">Füllwörter</span></div>
+      <div class="stat"><span class="stat-num" id="stat-rate">0,0</span><span class="stat-label">Äh / Minute</span></div>
+      <div class="stat"><span class="stat-num" id="stat-duration">00:00</span><span class="stat-label">Dauer</span></div>
+    </section>
+
+    <div id="downloads" class="downloads"></div>
+
+    <div class="columns">
+      <section class="card">
+        <h2>Live-Transkript</h2>
+        <p id="speech-warning" class="warn" hidden>
+          Dieser Browser hat keine Spracherkennung. Äh-Laute und Stottern werden trotzdem akustisch erkannt;
+          für Satzenden und Wortwiederholungen bitte Chrome oder Edge verwenden.
+        </p>
+        <div id="transcript" class="transcript"></div>
+        <p id="interim" class="interim"></p>
+      </section>
+      <section class="card">
+        <h2>Befunde</h2>
+        <p id="log-empty" class="muted">Noch nichts – gutes Zeichen.</p>
+        <ul id="log" class="log"></ul>
+      </section>
+    </div>
+
+    <details class="card">
+      <summary><h2>Einstellungen</h2></summary>
+
+      <h3>Rückmeldung je Kategorie</h3>
+      <table class="alert-table">
+        <thead><tr><th></th><th>Lampe</th><th>Piepton</th><th>Vibration</th></tr></thead>
+        <tbody>
+          <tr><th>Äh / Öh</th>
+            <td><input type="checkbox" data-setting="alerts.aeh.lamp" aria-label="Äh: Lampe"></td>
+            <td><input type="checkbox" data-setting="alerts.aeh.beep" aria-label="Äh: Piepton"></td>
+            <td><input type="checkbox" data-setting="alerts.aeh.vibrate" aria-label="Äh: Vibration"></td></tr>
+          <tr><th>Stottern</th>
+            <td><input type="checkbox" data-setting="alerts.stottern.lamp" aria-label="Stottern: Lampe"></td>
+            <td><input type="checkbox" data-setting="alerts.stottern.beep" aria-label="Stottern: Piepton"></td>
+            <td><input type="checkbox" data-setting="alerts.stottern.vibrate" aria-label="Stottern: Vibration"></td></tr>
+          <tr><th>Satzende</th>
+            <td><input type="checkbox" data-setting="alerts.satz.lamp" aria-label="Satzende: Lampe"></td>
+            <td><input type="checkbox" data-setting="alerts.satz.beep" aria-label="Satzende: Piepton"></td>
+            <td><input type="checkbox" data-setting="alerts.satz.vibrate" aria-label="Satzende: Vibration"></td></tr>
+          <tr><th>Füllwörter</th>
+            <td><input type="checkbox" data-setting="alerts.fuellwort.lamp" aria-label="Füllwörter: Lampe"></td>
+            <td><input type="checkbox" data-setting="alerts.fuellwort.beep" aria-label="Füllwörter: Piepton"></td>
+            <td><input type="checkbox" data-setting="alerts.fuellwort.vibrate" aria-label="Füllwörter: Vibration"></td></tr>
+        </tbody>
+      </table>
+      <p class="muted">Rot = Äh und Stottern, Gelb = Satzende und Füllwörter. Piepton am besten nur mit Kopfhörer im Training.</p>
+      <button id="btn-test-beep" class="btn btn-small" type="button">Alarm testen</button>
+
+      <h3>Empfindlichkeit</h3>
+      <label class="range">
+        <span>Äh ab Dauer <output data-output="fillerMinMs"></output> ms</span>
+        <input type="range" min="220" max="900" step="20" data-setting="fillerMinMs">
+        <small>Kleiner = empfindlicher. Gemeldet wird ein Laut, der so lange mit gleicher Tonhöhe und Klangfarbe gehalten wird.</small>
+      </label>
+      <label class="range">
+        <span>Klangfarben-Toleranz <output data-output="shapeTolDb"></output> dB</span>
+        <input type="range" min="3" max="9" step="0.5" data-setting="shapeTolDb">
+        <small>Größer = empfindlicher, aber mehr Fehlalarme bei langsamem Sprechen.</small>
+      </label>
+      <label class="range">
+        <span>Sprachschwelle <output data-output="speechMarginDb"></output> dB über Raumgeräusch</span>
+        <input type="range" min="6" max="24" step="1" data-setting="speechMarginDb">
+        <small>Erhöhen, wenn Hintergrundgeräusche Alarme auslösen.</small>
+      </label>
+      <label class="range">
+        <span>Dehnung (s, sch, f) ab <output data-output="prolongMinMs"></output> ms</span>
+        <input type="range" min="300" max="1200" step="50" data-setting="prolongMinMs">
+      </label>
+      <label class="check"><input type="checkbox" data-setting="repetitionAcoustic"> Silbenwiederholungen akustisch erkennen („b-b-bitte“)</label>
+      <label class="range">
+        <span>Lampe leuchtet <output data-output="holdMs"></output> ms</span>
+        <input type="range" min="500" max="4000" step="100" data-setting="holdMs">
+      </label>
+
+      <h3>Spracherkennung</h3>
+      <label class="check"><input type="checkbox" data-setting="useSpeech"> Live-Transkript nutzen (Satzende, Wortwiederholungen)</label>
+      <label class="field">
+        <span>Sprache</span>
+        <select data-setting="lang">
+          <option value="de-DE">Deutsch (Deutschland)</option>
+          <option value="de-AT">Deutsch (Österreich)</option>
+          <option value="de-CH">Deutsch (Schweiz)</option>
+          <option value="en-US">Englisch (USA)</option>
+          <option value="en-GB">Englisch (UK)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Eigene Füllwörter (kommagetrennt, gelbe Lampe)</span>
+        <input type="text" data-setting="extraFillers" placeholder="z. B. also, sozusagen, quasi, halt, irgendwie">
+      </label>
+
+      <h3>KI-Prüfung der Satzenden (optional)</h3>
+      <p class="muted">
+        Erkennt auch Sätze, die mit einem unpassenden Verb enden. Jede abgeschlossene Äußerung wird dafür als Text
+        an die Claude-API geschickt (kostenpflichtig, eigener API-Schlüssel nötig, Rückmeldung nach ca. 2–5 Sekunden).
+        Der Schlüssel wird nur in diesem Browser gespeichert.
+      </p>
+      <label class="check"><input type="checkbox" data-setting="claude.enabled"> KI-Prüfung aktivieren</label>
+      <label class="field">
+        <span>Anthropic-API-Schlüssel</span>
+        <input type="password" autocomplete="off" data-setting="claude.apiKey" placeholder="sk-ant-…">
+      </label>
+      <label class="field">
+        <span>Modell</span>
+        <select data-setting="claude.model">
+          <option value="claude-opus-5-5">Claude Opus 5.5 (Standard)</option>
+          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (schneller)</option>
+          <option value="claude-haiku-5-5">Claude Haiku 5.5 (am schnellsten, günstig)</option>
+        </select>
+      </label>
+
+      <h3>Aufnahme</h3>
+      <label class="check"><input type="checkbox" data-setting="record"> Vortrag mitschneiden (Download nach Stopp)</label>
+
+      <p><button id="btn-reset" class="btn btn-small" type="button">Einstellungen zurücksetzen</button></p>
+    </details>
+
+    <details class="card">
+      <summary><h2>Aufnahme nachträglich analysieren</h2></summary>
+      <p class="muted">Audiodatei einer Probe (z. B. Handy-Aufnahme) auswählen. Äh-Laute und Stotter-Stellen werden lokal gesucht und sind anklickbar.</p>
+      <input id="file-input" type="file" accept="audio/*,video/*">
+      <div id="file-result" class="file-result"></div>
+    </details>
+
+    <details class="card">
+      <summary><h2>So funktioniert es</h2></summary>
+      <ul class="howto">
+        <li><strong>Äh / Öh:</strong> akustisch erkannt – ein Laut, der länger als die eingestellte Dauer mit fast gleicher Tonhöhe und Klangfarbe gehalten wird. Das klappt auch ohne Internet und schneller als jede Spracherkennung.</li>
+        <li><strong>Stottern:</strong> Dehnungen („Mmmmeine“, „Ssso“), schnelle Silbenwiederholungen („b-b-bitte“) akustisch; Wort- und Teilwortwiederholungen („ich ich“, „Pro- Projekt“) über das Transkript.</li>
+        <li><strong>Satzende:</strong> nach jeder Sprechpause wird geprüft, ob der Satz offen endet – mit Artikel/Konjunktion („… und die“), ohne Verb im Nebensatz („…, dass wir das Projekt“) oder mit offener Verbklammer („Ich möchte heute über X“). Unpassende Verben erkennt nur die optionale KI-Prüfung.</li>
+        <li><strong>Tipp:</strong> Handy oder Tablet ans Pult legen, Bühnenmodus an – der ganze Bildschirm leuchtet dann rot oder gelb und ist aus dem Augenwinkel sichtbar.</li>
+        <li><strong>Datenschutz:</strong> Die akustische Analyse läuft vollständig im Browser. Für das Live-Transkript schicken Chrome/Edge das Audio an den Spracherkennungsdienst von Google bzw. Microsoft.</li>
+      </ul>
+    </details>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
