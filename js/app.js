@@ -4,6 +4,8 @@ import { LiveTranscriber } from './speech.js';
 import { Alerter } from './alerts.js';
 import { tokenize, findFillers, findRepetitions, checkSentenceEnd } from './text-analysis.js';
 import { SentenceJudge, describeError } from './claude-check.js';
+import { Spotter } from './sound-templates.js';
+import { TrainerUI } from './trainer-ui.js';
 
 // ---------------------------------------------------------------------------
 // Kategorien und Einstellungen
@@ -31,7 +33,7 @@ const DEFAULT_SETTINGS = {
   speechMarginDb: ACOUSTIC_DEFAULTS.speechMarginDb,
   prolongMinMs: ACOUSTIC_DEFAULTS.prolongMinMs,
   repetitionAcoustic: true,
-  extraFillers: '',
+  extraFillers: 'quasi, jetzt',
   record: false,
   claude: { enabled: false, apiKey: '', model: 'claude-opus-5-5' },
 };
@@ -63,6 +65,14 @@ function saveSettings() {
 }
 
 const settings = loadSettings();
+// Einmalig: "quasi" und "jetzt" als Standard-Füllwörter ergänzen
+if (!settings.fillerDefaultsV2) {
+  const have = settings.extraFillers.split(/[,;\n]/).map((w) => w.trim().toLowerCase()).filter(Boolean);
+  for (const w of ['quasi', 'jetzt']) if (!have.includes(w)) have.push(w);
+  settings.extraFillers = have.join(', ');
+  settings.fillerDefaultsV2 = true;
+  saveSettings();
+}
 
 function acousticOptions() {
   return {
@@ -105,6 +115,7 @@ const els = {
   fileInput: $('#file-input'),
   fileResult: $('#file-result'),
   speechWarning: $('#speech-warning'),
+  wordCounts: $('#word-counts'),
 };
 const counterEls = Object.fromEntries(Object.keys(CATEGORIES).map((k) => [k, $(`#count-${k}`)]));
 
@@ -125,6 +136,10 @@ function newSession() {
     interim: new Map(),
     fired: new Map(), // Ergebnis-ID -> Set bereits gemeldeter Stellen
     lastAcoustic: { aeh: -Infinity, stottern: -Infinity },
+    lastLearnedAeh: -Infinity,
+    lastLearned: new Map(), // angelernter Laut (Name) -> Zeitpunkt des letzten Treffers
+    words: new Map(), // Füllwort -> Anzahl
+    spotter: null,
     mic: null,
     detector: null,
     transcriber: null,
@@ -151,20 +166,24 @@ function fmtTime(ms) {
 }
 
 // Zentrale Stelle für jeden Befund: zählen, protokollieren, Lampe/Ton auslösen.
-function report({ category, source, text, lampText = text, detail = '', atMs = elapsedMs(), silent = false }) {
+function report({ category, source, text, lampText = text, detail = '', atMs = elapsedMs(), silent = false, color, word }) {
   if (!session) return;
   const evt = { category, source, text, detail, atMs };
   session.events.push(evt);
   session.counts[category]++;
   counterEls[category].textContent = session.counts[category];
+  if (word) {
+    session.words.set(word, (session.words.get(word) || 0) + 1);
+    renderWordCounts();
+  }
   appendLog(evt);
   if (silent) return;
 
   const cfg = settings.alerts[category];
   if (!cfg.lamp && !cfg.beep && !cfg.vibrate) return;
-  const color = CATEGORIES[category].color;
+  const lampColor = color || CATEGORIES[category].color;
   const beepMs = alerter.flash({
-    color: cfg.lamp ? color : 'listening',
+    color: cfg.lamp ? lampColor : 'listening',
     text: lampText,
     holdMs: Number(settings.holdMs),
     beep: cfg.beep,
@@ -172,6 +191,18 @@ function report({ category, source, text, lampText = text, detail = '', atMs = e
   });
   // Eigenen Piepton nicht als "Äh" erkennen
   if (beepMs && session.detector) session.detector.suppressUntil(session.detector.now() + beepMs + 300);
+}
+
+function renderWordCounts() {
+  const top = [...session.words.entries()].sort((a, b) => b[1] - a[1]);
+  els.wordCounts.replaceChildren();
+  els.wordCounts.hidden = top.length === 0;
+  for (const [w, n] of top) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = `${w} ${n}×`;
+    els.wordCounts.append(chip);
+  }
 }
 
 function appendLog(evt) {
@@ -192,7 +223,10 @@ function onAcousticEvent(e) {
   const at = e.t;
   if (e.type === 'filler') {
     session.lastAcoustic.aeh = elapsedMs();
-    report({ category: 'aeh', source: 'akustik', text: 'Laut gehalten', lampText: 'Äh', detail: `≥ ${Math.round(e.durationMs)} ms`, atMs: at });
+    // Ein angelernter Äh-Laut hat gerade schon angeschlagen
+    if (elapsedMs() - session.lastLearnedAeh < LEARNED_MERGE_MS) return;
+    const word = e.variant === 'ehm' ? 'ehm' : 'äh';
+    report({ category: 'aeh', source: 'akustik', text: e.variant === 'ehm' ? 'ehm/ähm' : 'Laut gehalten', lampText: 'Äh', detail: `≥ ${Math.round(e.durationMs)} ms`, atMs: at, word });
   } else if (e.type === 'prolongation') {
     session.lastAcoustic.stottern = elapsedMs();
     report({ category: 'stottern', source: 'akustik', text: 'Dehnung', lampText: 'Stottern – Dehnung', detail: `≥ ${Math.round(e.durationMs)} ms`, atMs: at });
@@ -200,6 +234,35 @@ function onAcousticEvent(e) {
     session.lastAcoustic.stottern = elapsedMs();
     report({ category: 'stottern', source: 'akustik', text: 'Silbenwiederholung', lampText: 'Stottern – Wiederholung', detail: `${e.count}×`, atMs: at });
   }
+}
+
+// --- angelernte Laute (Trainingsmodus) ---------------------------------------
+
+const LEARNED_MERGE_MS = 1500;
+
+function onLearnedHit(h) {
+  if (!session) return;
+  const t = h.template;
+  const now = elapsedMs();
+  session.lastLearned.set(t.name.toLowerCase(), now);
+  if (t.category === 'aeh') {
+    // Die eingebaute Äh-Erkennung hat denselben Laut evtl. schon gemeldet
+    if (now - session.lastAcoustic.aeh < LEARNED_MERGE_MS) {
+      session.lastLearnedAeh = now;
+      return;
+    }
+    session.lastLearnedAeh = now;
+  }
+  report({
+    category: t.category,
+    source: 'angelernt',
+    text: `„${t.name}“`,
+    lampText: t.name,
+    detail: `${Math.round(h.durationMs)} ms`,
+    atMs: h.t,
+    color: t.color,
+    word: t.name.toLowerCase(),
+  });
 }
 
 // --- Transkript-Befunde ------------------------------------------------------
@@ -220,10 +283,13 @@ function analyzeText(id, text, isFinal) {
     fired.add(key);
     if (f.kind === 'äh') {
       // Dasselbe Äh hat die Akustik meist schon gemeldet – nicht doppelt zählen.
-      if (elapsedMs() - session.lastAcoustic.aeh < MERGE_WINDOW_MS) continue;
-      report({ category: 'aeh', source: 'transkript', text: `„${f.word}“` });
+      if (elapsedMs() - Math.max(session.lastAcoustic.aeh, session.lastLearnedAeh) < MERGE_WINDOW_MS) continue;
+      report({ category: 'aeh', source: 'transkript', text: `„${f.word}“`, word: 'äh' });
     } else {
-      report({ category: 'fuellwort', source: 'transkript', text: `„${f.word}“` });
+      const w = f.word.toLowerCase();
+      // Als Laut angelernt und gerade schon erkannt – nicht doppelt zählen
+      if (elapsedMs() - (session.lastLearned.get(w) ?? -Infinity) < MERGE_WINDOW_MS) continue;
+      report({ category: 'fuellwort', source: 'transkript', text: `„${f.word}“`, word: w });
     }
   }
 
@@ -305,6 +371,10 @@ function setStatus(text, kind = '') {
 }
 
 async function start() {
+  if (trainer.busy) {
+    setStatus('Trainingsmodus nimmt gerade auf – bitte dort erst beenden.', 'warn');
+    return;
+  }
   alerter.unlock();
   session = newSession();
   resetView();
@@ -324,6 +394,11 @@ async function start() {
     onEvent: onAcousticEvent,
     onFrame: (f) => {
       if (session) session.lastFrame = f;
+    },
+    onRawFrame: (frame, f) => {
+      if (!session || !trainer.templates.length) return;
+      session.spotter ||= new Spotter(session.mic.sampleRate, session.detector.frameLength, 10, trainer.templates, onLearnedHit);
+      session.spotter.push(frame, f);
     },
   });
   // Erste 1,5 s dienen zum Einmessen des Raumgeräuschs.
@@ -404,7 +479,8 @@ async function stop() {
 function summaryText(s, durationMs) {
   const min = Math.max(durationMs / 60000, 1 / 60);
   const c = s.counts;
-  return `Fertig nach ${fmtTime(durationMs)}: ${c.aeh}× Äh (${perMinute(c.aeh, min)}/min), ${c.stottern}× Stottern, ${c.satz}× Satzende, ${c.fuellwort}× Füllwort`;
+  const words = [...s.words.entries()].sort((a, b) => b[1] - a[1]).map(([w, n]) => `${w} ${n}×`);
+  return `Fertig nach ${fmtTime(durationMs)}: ${c.aeh}× Äh (${perMinute(c.aeh, min)}/min), ${c.stottern}× Stottern, ${c.satz}× Satzende, ${c.fuellwort}× Füllwort${words.length ? ` · ${words.join(', ')}` : ''}`;
 }
 
 function offerDownloads(s, durationMs, recordingUrl) {
@@ -434,6 +510,8 @@ function addDownload(blobOrUrl, filename, label) {
 }
 
 function resetView() {
+  els.wordCounts.replaceChildren();
+  els.wordCounts.hidden = true;
   els.transcript.replaceChildren();
   els.interim.textContent = '';
   els.log.replaceChildren();
@@ -592,6 +670,12 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     session ? stop() : start();
   } else if (e.key === 'Escape') exitStage();
+});
+
+const trainer = new TrainerUI($('#trainer'), {
+  isLiveRunning: () => Boolean(session),
+  onTemplatesChanged: (templates) => session?.spotter?.setTemplates(templates),
+  setStatus,
 });
 
 bindSettings();

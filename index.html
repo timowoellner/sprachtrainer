@@ -40,7 +40,75 @@
       <div class="stat"><span class="stat-num" id="stat-duration">00:00</span><span class="stat-label">Dauer</span></div>
     </section>
 
+    <div id="word-counts" class="word-counts" aria-label="Deine Füllwörter" hidden></div>
+
     <div id="downloads" class="downloads"></div>
+
+    <section id="trainer" class="card trainer" aria-labelledby="trainer-title">
+      <h2 id="trainer-title">Trainingsmodus: eigene Laute anlernen</h2>
+      <p class="muted">
+        Sag deinen Laut oder dein Füllwort (z. B. „ehm“, „quasi“, „jetzt“) etwa zehnmal hintereinander, jeweils mit kurzer Pause.
+        Die App merkt sich, wie das bei dir klingt – Dauer, Tonhöhe und Klangverlauf – und erkennt es danach live, auch ohne Spracherkennung.
+      </p>
+
+      <div class="trainer-steps">
+        <div class="trainer-step">
+          <h3>1 · Vorsprechen</h3>
+          <div class="trainer-count">
+            <span id="tr-count" class="trainer-num">0 / 10</span>
+            <div class="meter trainer-meter"><div id="tr-progress" class="meter-fill"></div></div>
+          </div>
+          <button id="tr-record" class="btn btn-primary" type="button">Aufnahme starten</button>
+          <ul id="tr-samples" class="chips" aria-label="Aufgenommene Wiederholungen"></ul>
+        </div>
+
+        <div class="trainer-step">
+          <h3>2 · Gegenprobe <span class="muted">(empfohlen)</span></h3>
+          <p class="muted">15 Sekunden normal sprechen, ohne den Laut. So lernt die App, was <em>nicht</em> gemeint ist – weniger Fehlalarme.</p>
+          <button id="tr-negative" class="btn" type="button" disabled>Gegenprobe: 15 s normal sprechen</button>
+        </div>
+
+        <div class="trainer-step">
+          <h3>3 · Benennen</h3>
+          <label class="field">
+            <span>Wie heißt der Laut?</span>
+            <input id="tr-name" type="text" autocomplete="off" placeholder="z. B. ehm, quasi, jetzt">
+          </label>
+          <div class="trainer-row">
+            <label class="field">
+              <span>Zählt als</span>
+              <select id="tr-category">
+                <option value="fuellwort">Füllwort</option>
+                <option value="aeh">Äh-Laut</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Lampe</span>
+              <select id="tr-color">
+                <option value="red">rot</option>
+                <option value="amber">gelb</option>
+              </select>
+            </label>
+          </div>
+          <div class="trainer-row">
+            <button id="tr-save" class="btn btn-primary" type="button" disabled>Speichern</button>
+            <button id="tr-discard" class="btn btn-small" type="button" hidden>Verwerfen</button>
+          </div>
+        </div>
+      </div>
+
+      <p id="tr-hint" class="trainer-hint" role="status"></p>
+
+      <div class="trainer-learned">
+        <div class="trainer-row">
+          <h3>Angelernte Laute</h3>
+          <button id="tr-test" class="btn btn-small" type="button" disabled>Testen</button>
+        </div>
+        <p id="tr-empty" class="muted">Noch keine. Sie werden nur in diesem Browser gespeichert.</p>
+        <ul id="tr-test-hits" class="log"></ul>
+        <div id="tr-list" class="sounds"></div>
+      </div>
+    </section>
 
     <div class="columns">
       <section class="card">
@@ -126,8 +194,8 @@
         </select>
       </label>
       <label class="field">
-        <span>Eigene Füllwörter (kommagetrennt, gelbe Lampe)</span>
-        <input type="text" data-setting="extraFillers" placeholder="z. B. also, sozusagen, quasi, halt, irgendwie">
+        <span>Füllwörter im Transkript (kommagetrennt)</span>
+        <input type="text" data-setting="extraFillers" placeholder="z. B. quasi, jetzt, also, sozusagen, halt">
       </label>
 
       <h3>KI-Prüfung der Satzenden (optional)</h3>
@@ -169,6 +237,7 @@
         <li><strong>Äh / Öh:</strong> akustisch erkannt – ein Laut, der länger als die eingestellte Dauer mit fast gleicher Tonhöhe und Klangfarbe gehalten wird. Das klappt auch ohne Internet und schneller als jede Spracherkennung.</li>
         <li><strong>Stottern:</strong> Dehnungen („Mmmmeine“, „Ssso“), schnelle Silbenwiederholungen („b-b-bitte“) akustisch; Wort- und Teilwortwiederholungen („ich ich“, „Pro- Projekt“) über das Transkript.</li>
         <li><strong>Satzende:</strong> nach jeder Sprechpause wird geprüft, ob der Satz offen endet – mit Artikel/Konjunktion („… und die“), ohne Verb im Nebensatz („…, dass wir das Projekt“) oder mit offener Verbklammer („Ich möchte heute über X“). Unpassende Verben erkennt nur die optionale KI-Prüfung.</li>
+        <li><strong>Trainingsmodus:</strong> Laute, die du selbst angelernt hast, werden über ihren Klangverlauf erkannt (Vergleich mit allen deinen Wiederholungen, Tempo-Unterschiede werden ausgeglichen). Das funktioniert offline und reagiert direkt nach dem Wort.</li>
         <li><strong>Tipp:</strong> Handy oder Tablet ans Pult legen, Bühnenmodus an – der ganze Bildschirm leuchtet dann rot oder gelb und ist aus dem Augenwinkel sichtbar.</li>
         <li><strong>Datenschutz:</strong> Die akustische Analyse läuft vollständig im Browser. Für das Live-Transkript schicken Chrome/Edge das Audio an den Spracherkennungsdienst von Google bzw. Microsoft.</li>
       </ul>

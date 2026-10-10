@@ -4,6 +4,8 @@
 //  * "Äh" / "Öh" / "Ähm" (gefüllte Pause): ein stimmhafter Laut, bei dem Tonhöhe UND
 //    Klangfarbe (Formanten) über längere Zeit fast unverändert bleiben. In normaler
 //    Rede ändern sich beide alle 50–200 ms, weil Laute ineinander übergehen.
+//  * Kurzes "ehm" / "ähm": zwei gehaltene Laute direkt hintereinander ("e" + "m") bei
+//    durchgehend flacher Tonhöhe. Die Klangfarbe springt einmal, die Stimme bleibt gleich.
 //  * Dehnung (Stottern, "Sssso", "Mmmmeine"): dasselbe Prinzip – ein Laut wird
 //    ungewöhnlich lange gehalten. Stimmlose Reibelaute (s, sch, f) werden über die
 //    Nulldurchgangsrate erkannt.
@@ -32,11 +34,18 @@ export const ACOUSTIC_DEFAULTS = {
   maxF0: 400,
   clarityMin: 0.72,
   // Äh / gehaltener stimmhafter Laut
-  fillerMinMs: 380,
+  fillerMinMs: 400,
   pitchStepSt: 1.0, // max. Tonhöhensprung von Frame zu Frame (Halbtöne)
   pitchDriftSt: 2.0, // max. Abweichung vom Mittel des Lautes (Halbtöne)
   shapeTolDb: 5.5, // max. Klangfarbenänderung (dB, gemittelt über Bänder)
   gapToleranceFrames: 3,
+  // Kurzes ehm/ähm (zwei Lautplateaus bei flacher Tonhöhe)
+  ehmDetect: true,
+  ehmMinMs: 300,
+  ehmPitchRangeSt: 1.2, // Tonhöhe bleibt innerhalb dieses Bereichs
+  ehmPlateauMinMs: 90, // Mindestdauer eines gehaltenen Teils
+  ehmFirstPlateauMinMs: 120,
+  ehmCoverage: 0.7, // Anteil der Zeit, der aus gehaltenen Teilen besteht
   // Dehnung stimmloser Reibelaute
   prolongMinMs: 550,
   fricZcr: 0.28,
@@ -55,6 +64,7 @@ export class AcousticDetector {
     this.opt = { ...ACOUSTIC_DEFAULTS, ...options };
     this.onEvent = callbacks.onEvent || (() => {});
     this.onFrame = callbacks.onFrame || (() => {});
+    this.onRawFrame = callbacks.onRawFrame || null; // für angelernte Laute
 
     this.frameLen = Math.round((sampleRate * this.opt.frameMs) / 1000);
     this.hopLen = Math.round((sampleRate * this.opt.hopMs) / 1000);
@@ -70,6 +80,7 @@ export class AcousticDetector {
     this.noiseFloor = null;
     this.suppressedUntil = -1;
     this.run = null;
+    this.prun = null;
     this.segment = null;
     this.silentFrames = 0;
     this.recentSegments = [];
@@ -78,6 +89,10 @@ export class AcousticDetector {
 
   setOptions(options) {
     Object.assign(this.opt, options);
+  }
+
+  get frameLength() {
+    return this.frameLen;
   }
 
   // Aktuelle Detektorzeit in ms (bezogen auf verarbeitete Samples).
@@ -89,6 +104,7 @@ export class AcousticDetector {
   suppressUntil(ms) {
     this.suppressedUntil = Math.max(this.suppressedUntil, ms);
     this.run = null;
+    this.prun = null;
     this.recentSegments = [];
   }
 
@@ -131,12 +147,15 @@ export class AcousticDetector {
     const voiced = speech && clarity >= o.clarityMin && f0 > 0;
     const fricative = speech && !voiced && zcr >= o.fricZcr;
 
-    const features = { t, db, noiseFloor: this.noiseFloor, speech, voiced, fricative, f0, clarity, zcr };
+    const suppressed = t < this.suppressedUntil;
+    const features = { t, db, noiseFloor: this.noiseFloor, speech, voiced, fricative, f0, clarity, zcr, suppressed };
     this.onFrame(features);
+    if (this.onRawFrame) this.onRawFrame(frame, features);
 
-    if (t < this.suppressedUntil) return;
+    if (suppressed) return;
 
     this.trackSustained(t, features, shape);
+    this.trackPitchRun(t, features, shape);
     this.trackSegments(t, features, shape);
   }
 
@@ -186,10 +205,13 @@ export class AcousticDetector {
       return;
     }
 
-    const duration = run.lastT - run.start + o.hopMs;
+    const duration = run.lastT - run.start + o.frameMs; // letzter Frame reicht ein Fenster weit
     const limit = run.kind === 'voiced' ? o.fillerMinMs : o.prolongMinMs;
     if (!run.fired && duration >= limit) {
       run.fired = true;
+      // Dasselbe Ähm wurde schon über die Zwei-Laut-Regel gemeldet
+      if (run.kind === 'voiced' && this.prun?.fired) return;
+      if (run.kind === 'voiced' && this.prun) this.prun.fired = true;
       this.onEvent({
         source: 'akustik',
         type: run.kind === 'voiced' ? 'filler' : 'prolongation',
@@ -200,6 +222,91 @@ export class AcousticDetector {
         pitchRangeSt: run.maxSt - run.minSt,
       });
     }
+  }
+
+  // --- kurzes ehm/ähm: flache Tonhöhe über höchstens zwei Lautplateaus ------
+  trackPitchRun(t, f, shape) {
+    const o = this.opt;
+    if (!o.ehmDetect) return;
+    const pr = this.prun;
+
+    if (f.voiced) {
+      const st = hzToSemitones(f.f0);
+      const fits =
+        pr &&
+        Math.abs(st - pr.lastSt) <= o.pitchStepSt &&
+        Math.max(pr.maxSt, st) - Math.min(pr.minSt, st) <= o.ehmPitchRangeSt;
+      if (fits) {
+        pr.n++;
+        pr.gap = 0;
+        pr.lastT = t;
+        pr.lastSt = st;
+        pr.minSt = Math.min(pr.minSt, st);
+        pr.maxSt = Math.max(pr.maxSt, st);
+        if (shapeDistance(shape, pr.plShape) <= o.shapeTolDb) {
+          pr.plN++;
+          const w = 1 / Math.min(pr.plN, 20);
+          for (let i = 0; i < shape.length; i++) pr.plShape[i] += (shape[i] - pr.plShape[i]) * w;
+        } else {
+          this.closePlateau(pr);
+          pr.plShape = Float32Array.from(shape);
+          pr.plN = 1;
+        }
+      } else if (pr && pr.gap < o.gapToleranceFrames) {
+        pr.gap++;
+        return;
+      } else {
+        this.prun = {
+          start: t,
+          lastT: t,
+          n: 1,
+          gap: 0,
+          lastSt: st,
+          minSt: st,
+          maxSt: st,
+          plShape: Float32Array.from(shape),
+          plN: 1,
+          plateaus: [],
+          monotone: false,
+          fired: Boolean(this.run?.fired && this.run.kind === 'voiced'),
+        };
+        return;
+      }
+    } else {
+      if (pr && pr.gap < o.gapToleranceFrames) pr.gap++;
+      else this.prun = null;
+      return;
+    }
+
+    if (pr.fired || pr.monotone) return;
+    const duration = pr.lastT - pr.start + o.frameMs;
+    if (duration < o.ehmMinMs) return;
+    const plateaus = [...pr.plateaus];
+    if (pr.plN * o.hopMs >= o.ehmPlateauMinMs) plateaus.push(pr.plN * o.hopMs);
+    if (plateaus.length !== 2) return; // ein einzelnes Plateau deckt die Äh-Regel ab
+    if (plateaus[0] < o.ehmFirstPlateauMinMs) return;
+    const covered = plateaus.reduce((a, b) => a + b, 0);
+    if (covered / duration < o.ehmCoverage) return;
+
+    pr.fired = true;
+    if (this.run?.kind === 'voiced') this.run.fired = true;
+    this.onEvent({
+      source: 'akustik',
+      type: 'filler',
+      variant: 'ehm',
+      t: pr.start,
+      detectedAt: t,
+      durationMs: duration,
+      f0: 55 * Math.pow(2, pr.lastSt / 12),
+      pitchRangeSt: pr.maxSt - pr.minSt,
+    });
+  }
+
+  closePlateau(pr) {
+    const ms = pr.plN * this.opt.hopMs;
+    if (ms >= this.opt.ehmPlateauMinMs) pr.plateaus.push(ms);
+    // Mehr als zwei gehaltene Teile bei flacher Stimme ist monotones Sprechen, kein Ähm.
+    if (pr.plateaus.length > 2) pr.monotone = true;
   }
 
   // --- Silbenwiederholungen -------------------------------------------------

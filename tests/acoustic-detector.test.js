@@ -88,3 +88,38 @@ test('Unterdrückung (eigener Piepton) verhindert Alarme', () => {
   det.push(sig);
   assert.equal(events.length, 0);
 });
+
+// "ehm": kurzes "e" und direkt danach "m", Stimme bleibt auf gleicher Höhe
+const NASAL_M = [260, 1100, 2300];
+function ehm(partMs = 150, f0 = 120) {
+  return [vowel({ ms: partMs, f0From: f0, f0To: f0 - 1, from: VOWELS.e }), vowel({ ms: partMs, f0From: f0 - 1, f0To: f0 - 2, from: NASAL_M, amp: 0.12 })];
+}
+
+test('kurzes "ehm" (2 × 150 ms) wird erkannt, obwohl kein Teil allein lang genug ist', () => {
+  const sig = concat(silence(400), ...ehm(150), silence(400));
+  const fillers = analyze(sig).filter((e) => e.type === 'filler');
+  assert.equal(fillers.length, 1);
+  assert.equal(fillers[0].variant, 'ehm');
+});
+
+test('langes "ähm" wird nur einmal gemeldet', () => {
+  const sig = concat(silence(400), vowel({ ms: 450, f0From: 118, f0To: 117, from: VOWELS.ae }), vowel({ ms: 400, f0From: 117, f0To: 116, from: NASAL_M, amp: 0.12 }), silence(400));
+  assert.equal(analyze(sig).filter((e) => e.type === 'filler').length, 1);
+});
+
+test('kurzes "ehm" mit Tonhöhenbewegung (normales Wort) ist kein Füllwort', () => {
+  const sig = concat(
+    silence(400),
+    vowel({ ms: 150, f0From: 150, f0To: 135, from: VOWELS.e }),
+    vowel({ ms: 150, f0From: 135, f0To: 115, from: NASAL_M, amp: 0.12 }),
+    silence(400),
+  );
+  assert.equal(analyze(sig).filter((e) => e.type === 'filler').length, 0);
+});
+
+test('monotones Sprechen mit vielen Vokalen auf gleicher Höhe ist kein ehm', () => {
+  const parts = [silence(400)];
+  for (const v of ['a', 'e', 'o', 'i', 'u']) parts.push(vowel({ ms: 110, f0From: 125, f0To: 124, from: VOWELS[v] }));
+  parts.push(silence(400));
+  assert.equal(analyze(concat(...parts)).filter((e) => e.type === 'filler').length, 0);
+});

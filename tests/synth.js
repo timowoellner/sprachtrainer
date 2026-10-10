@@ -13,7 +13,7 @@ export const VOWELS = {
   oe: [460, 1450, 2400], // "ö"
 };
 
-let seed = 12345;
+let seed = Number(globalThis.process?.env?.SYNTH_SEED ?? 12345);
 function rand() {
   seed = (seed * 1103515245 + 12345) & 0x7fffffff;
   return seed / 0x7fffffff;
